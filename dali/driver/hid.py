@@ -446,10 +446,15 @@ class tridonic(hid):
             outstanding_transmissions = 2 if command.sendtwice else 1
             response = None
             while outstanding_transmissions or response is None:
-                self._log.debug(f"waiting for {outstanding_transmissions=} "
+                self._log.debug(f"_send_raw waiting for {outstanding_transmissions=} "
                                 f"{response=}")
                 if len(messages) == 0:
-                    await event.wait()
+                    try:
+                        await asyncio.wait_for(event.wait(), timeout=5)
+                        self._log.debug(f"_send_raw got event {seq=:02x}")
+                    except TimeoutError:
+                        self._log.error(f"_send_raw lockup detected, no event received {seq=:02x}")
+                        raise
                     event.clear()
                 message = messages.pop(0)
                 if message == "fail":
@@ -466,6 +471,7 @@ class tridonic(hid):
                              self._RESPONSE_FRAME_DALI24):
                     # XXX check the frame contents?
                     outstanding_transmissions -= 1
+                    self._log.debug(f"_send_raw rtype DALI16 or DALI24, new {outstanding_transmissions=}")
                 elif rtype == self._RESPONSE_FRAME_DALI8:
                     response = dali.frame.BackwardFrame(frame)
                 elif rtype == self._RESPONSE_INFO \
@@ -475,6 +481,7 @@ class tridonic(hid):
                     response = "no"
                 else:
                     self._log.debug(f"didn't understand {rtype=}")
+            self._log.debug(f"_send_raw deleting _outstanding {seq=:02x}")
             del self._outstanding[seq], event, messages
             if command.response:
                 # Construct response and return it
@@ -656,10 +663,13 @@ class tridonic(hid):
             # ignore this - the sequence number will have been removed
             # from self._outstanding.
             if seq in self._outstanding:
+                self._log.debug(f"_handle_read: signaling for {seq=:02x}")
                 event, messages = self._outstanding[seq]
                 messages.append(data)
                 event.set()
                 del event, messages
+            else:
+                self._log.debug(f"_handle_read: nothing to do for {seq=:02x}")
 
         else:
             self._log.debug("Unknown response mode %x", data[0])
